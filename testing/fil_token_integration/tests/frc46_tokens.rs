@@ -2,6 +2,9 @@ use std::env;
 
 use basic_token_actor::MintParams;
 use cid::Cid;
+use ethers::abi::{AbiDecode, AbiEncode, ParamType, Token as ETHToken};
+use ethers::types::{BigEndianHash, H256, U256};
+use ethers::utils::keccak256;
 use frc42_dispatch::method_hash;
 use frc46_token::token::{state::TokenState, types::MintReturn};
 use fvm::executor::{ApplyKind, Executor};
@@ -11,7 +14,7 @@ use fvm_integration_tests::tester::{Account, Tester};
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_encoding::RawBytes;
 use fvm_shared::address::Address;
-use fvm_shared::bigint::Zero;
+use fvm_shared::bigint::{BigInt, Sign, Zero};
 use fvm_shared::econ::TokenAmount;
 use fvm_shared::message::Message;
 use fvm_shared::state::StateTreeVersion;
@@ -44,8 +47,10 @@ fn it_mints_tokens() {
     let actor_state = TokenState::new(&blockstore).unwrap(); // TODO: this should probably not be exported from the package
     let state_cid = tester.set_state(&actor_state).unwrap();
 
-    let actor_address = Address::new_id(10000);
-    let receive_address = Address::new_id(10010);
+    let token_actor_id = 10000;
+    let actor_address = Address::new_id(token_actor_id);
+    let receive_actor_id = 10010;
+    let receive_address = Address::new_id(receive_actor_id);
     tester.set_actor_from_bin(&wasm_bin, state_cid, actor_address, TokenAmount::zero()).unwrap();
     tester
         .set_actor_from_bin(&rcvr_bin, Cid::default(), receive_address, TokenAmount::zero())
@@ -99,12 +104,55 @@ fn it_mints_tokens() {
         println!("new total supply: {:?}", &mint_result.supply);
     }
 
-    // Check balance
-    let params = RawBytes::serialize(receive_address).unwrap();
-    let ret_val = call_method(minter[0].1, actor_address, method_hash!("BalanceOf"), Some(params));
-    println!("balance return data {:#?}", &ret_val);
-
+    // Transfer some tokens
+    let params =
+        (ethers::types::Address::from_low_u64_be(receive_actor_id), U256::from(0)).encode();
+    let params = RawBytes::new(params);
+    let method_num = u32::from_be_bytes(
+        keccak256(b"transfer(address,uint256)")[..4]
+            .try_into()
+            .expect("bytes was not at least length 4"),
+    );
+    let ret_val = call_method(minter[0].1, actor_address, method_num as u64, Some(params));
+    println!("transfer return data {:#?}", &ret_val);
     let return_data = ret_val.msg_receipt.return_data;
-    let balance: TokenAmount = return_data.deserialize().unwrap();
-    println!("balance: {balance:?}");
+    if return_data.is_empty() {
+        println!("return data was empty");
+    } else {
+        let result = bool::decode(return_data.bytes()).unwrap();
+        println!("transfer: {}", result);
+    }
+
+    // Check balance(ERC20)
+    let params = RawBytes::new(ethers::types::Address::from_low_u64_be(receive_actor_id).encode());
+    let method_num = u32::from_be_bytes(
+        keccak256(b"balanceOf(address)")[..4].try_into().expect("bytes was not at least length 4"),
+    );
+    let ret_val = call_method(minter[0].1, actor_address, method_num as u64, Some(params));
+    println!("balanceOf return data {:#?}", &ret_val);
+    let return_data = ret_val.msg_receipt.return_data;
+    if return_data.is_empty() {
+        println!("return data was empty");
+    } else {
+        let result = ethers::types::U256::decode(return_data.bytes()).unwrap();
+        println!("balanceOf: {}", result);
+
+        println!("balanceOf: {:?}", u256_to_token_amount(result));
+    }
+
+    // Check balance
+    // let params = RawBytes::serialize(receive_address).unwrap();
+    // let ret_val = call_method(minter[0].1, actor_address, method_hash!("BalanceOf"), Some(params));
+    // println!("balance return data {:#?}", &ret_val);
+
+    // let return_data = ret_val.msg_receipt.return_data;
+    // let balance: TokenAmount = return_data.deserialize().unwrap();
+    // println!("balance: {balance:?}");
+}
+
+fn u256_to_token_amount(amount: U256) -> TokenAmount {
+    let mut big_endian = [0u8; 32];
+    amount.to_big_endian(&mut big_endian);
+    let amount = BigInt::from_bytes_be(Sign::Plus, &big_endian);
+    TokenAmount::from_atto(amount)
 }

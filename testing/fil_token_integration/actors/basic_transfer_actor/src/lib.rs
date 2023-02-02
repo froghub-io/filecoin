@@ -1,4 +1,6 @@
 use cid::{multihash::Code, Cid};
+use ethabi::ethereum_types::{H160, U256};
+use ethabi::Token;
 use frc42_dispatch::{match_method, method_hash};
 use frc46_token::receiver::{FRC46TokenReceived, FRC46_TOKEN_TYPE};
 use frc46_token::token::types::TransferParams;
@@ -8,6 +10,8 @@ use fvm_ipld_encoding::ipld_block::IpldBlock;
 use fvm_ipld_encoding::tuple::{Deserialize_tuple, Serialize_tuple};
 use fvm_ipld_encoding::{de::DeserializeOwned, RawBytes, DAG_CBOR};
 use fvm_sdk as sdk;
+use fvm_shared::bigint::{BigInt, Sign};
+use fvm_shared::IPLD_RAW;
 use fvm_shared::{address::Address, bigint::Zero, econ::TokenAmount, error::ExitCode};
 use sdk::NO_DATA_BLOCK_ID;
 
@@ -123,14 +127,26 @@ fn invoke(input: u32) -> u32 {
             let balance = balance_ret.return_data.unwrap().deserialize::<TokenAmount>().unwrap();
 
             // transfer to target address
-            let params = TransferParams {
-                to: target,
-                amount: balance, // send everything
-                operator_data: RawBytes::default(),
-            };
-            let transfer_ret = sdk::send::send(&state.token_address.unwrap(), method_hash!("Transfer"),
+            // let params = TransferParams {
+            //     to: target,
+            //     amount: balance, // send everything
+            //     operator_data: RawBytes::default(),
+            // };
+            // let transfer_ret = sdk::send::send(&state.token_address.unwrap(), method_hash!("Transfer"),
+            //     IpldBlock::serialize_cbor(&params).unwrap(), TokenAmount::zero()).unwrap();
+            // if !transfer_ret.exit_code.is_success() {
+            //     panic!("transfer call failed");
+            // }
 
-                IpldBlock::serialize_cbor(&params).unwrap(), TokenAmount::zero()).unwrap();
+            // transfer to target address
+            let target_actor_id = sdk::actor::resolve_address(&target).unwrap();
+            let bytes = ethabi::encode(&[Token::Address(address_to_h160(Address::new_id(target_actor_id)))
+                    , Token::Uint(token_amount_to_u256(balance))]);
+            let transfer_ret = sdk::send::send(&state.token_address.unwrap(), 0xa9059cbb,
+                Some(IpldBlock{
+                    data: bytes,
+                    codec: DAG_CBOR,
+                }), TokenAmount::zero()).unwrap();
             if !transfer_ret.exit_code.is_success() {
                 panic!("transfer call failed");
             }
@@ -146,4 +162,25 @@ fn invoke(input: u32) -> u32 {
             );
         }
     })
+}
+
+fn h160_to_address(addr: H160) -> Address {
+    let id = addr.to_low_u64_be();
+    Address::new_id(id)
+}
+
+fn address_to_h160(addr: Address) -> H160 {
+    H160::from_low_u64_be(addr.id().unwrap())
+}
+
+fn token_amount_to_u256(amount: TokenAmount) -> U256 {
+    let (_, amount) = amount.atto().to_bytes_be();
+    U256::from_big_endian(amount.as_slice())
+}
+
+fn u256_to_token_amount(amount: U256) -> TokenAmount {
+    let mut big_endian = [0u8; 32];
+    amount.to_big_endian(&mut big_endian);
+    let amount = BigInt::from_bytes_be(Sign::Plus, &big_endian);
+    TokenAmount::from_atto(amount)
 }

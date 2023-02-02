@@ -1,6 +1,10 @@
 mod util;
 
+use std::mem::transmute;
+
 use cid::Cid;
+use ethabi::ethereum_types::{H160, U256};
+use ethabi::{ParamType, Token as ETHToken};
 use frc46_token::token::types::{
     AllowanceReturn, BalanceReturn, BurnFromReturn, BurnParams, BurnReturn,
     DecreaseAllowanceParams, FRC46Token, GetAllowanceParams, GranularityReturn,
@@ -15,8 +19,10 @@ use fvm_ipld_encoding::tuple::{Deserialize_tuple, Serialize_tuple};
 use fvm_ipld_encoding::{RawBytes, DAG_CBOR};
 use fvm_sdk as sdk;
 use fvm_shared::address::Address;
+use fvm_shared::bigint::{BigInt, Sign};
 use fvm_shared::econ::TokenAmount;
 use fvm_shared::error::ExitCode;
+use fvm_shared::IPLD_RAW;
 use sdk::sys::ErrorNumber;
 use sdk::NO_DATA_BLOCK_ID;
 use serde::ser;
@@ -34,11 +40,11 @@ struct BasicToken<'state> {
 impl FRC46Token for BasicToken<'_> {
     type TokenError = RuntimeError;
     fn name(&self) -> String {
-        String::from("FRC-0046 Token")
+        String::from("ERC-20 Token")
     }
 
     fn symbol(&self) -> String {
-        String::from("FRC46")
+        String::from("ERC20")
     }
 
     fn granularity(&self) -> GranularityReturn {
@@ -226,76 +232,113 @@ pub fn invoke(params: u32) -> u32 {
             // Method numbers calculated via fvm_dispatch_tools using CamelCase names derived from
             // the corresponding FRC46Token trait methods.
             match rest {
-                0x02ea015c => {
-                    // Name
-                    let name = token_actor.name();
-                    return_ipld(&name).unwrap()
-                }
-                0x7adab63e => {
-                    // Symbol
-                    let symbol = token_actor.symbol();
-                    return_ipld(&symbol).unwrap()
-                }
-                0x06da7a35 => {
-                    // TotalSupply
-                    let total_supply = token_actor.total_supply();
-                    return_ipld(&total_supply).unwrap()
-                }
+                // 0x02ea015c => {
+                //     // Name
+                //     let name = token_actor.name();
+                //     return_ipld(&name).unwrap()
+                // }
+                // 0x7adab63e => {
+                //     // Symbol
+                //     let symbol = token_actor.symbol();
+                //     return_ipld(&symbol).unwrap()
+                // }
+                // 0x06da7a35 => {
+                //     // TotalSupply
+                //     let total_supply = token_actor.total_supply();
+                //     return_ipld(&total_supply).unwrap()
+                // }
                 0x8710e1ac => {
                     //BalanceOf
                     let params = deserialize_params(params);
                     let res = token_actor.balance_of(params).unwrap();
                     return_ipld(&res).unwrap()
                 }
-                0xfaa45236 => {
-                    // Allowance
-                    let params = deserialize_params(params);
-                    let res = token_actor.allowance(params).unwrap();
-                    return_ipld(&res).unwrap()
+                0x70a08231 => {
+                    //ERC20-balanceOf
+                    let params = sdk::message::params_raw(params).unwrap().unwrap();
+                    let tokens =
+                        ethabi::decode(&[ParamType::Address], params.data.as_slice()).unwrap();
+                    if let [ETHToken::Address(addr)] = tokens[..] {
+                        let res = token_actor.balance_of(h160_to_address(addr)).unwrap();
+                        let bytes = ethabi::encode(&[ETHToken::Uint(token_amount_to_u256(res))]);
+                        sdk::ipld::put_block(DAG_CBOR, bytes.as_slice()).unwrap()
+                    } else {
+                        sdk::vm::abort(ExitCode::USR_ILLEGAL_ARGUMENT.value(), None);
+                    }
                 }
-                0x69ecb918 => {
-                    // IncreaseAllowance
-                    let params = deserialize_params(params);
-                    let res = token_actor.increase_allowance(params).unwrap();
-                    let cid = token_actor.util.flush().unwrap();
-                    sdk::sself::set_root(&cid).unwrap();
-                    return_ipld(&res).unwrap()
-                }
-                0x5b286f21 => {
-                    // DecreaseAllowance
-                    let params = deserialize_params(params);
-                    let res = token_actor.decrease_allowance(params).unwrap();
-                    let cid = token_actor.util.flush().unwrap();
-                    sdk::sself::set_root(&cid).unwrap();
-                    return_ipld(&res).unwrap()
-                }
-                0xa4d840b1 => {
-                    // RevokeAllowance
-                    let params = deserialize_params(params);
-                    token_actor.revoke_allowance(params).unwrap();
-                    let cid = token_actor.util.flush().unwrap();
-                    sdk::sself::set_root(&cid).unwrap();
-                    NO_DATA_BLOCK_ID
-                }
-                0x5584159a => {
-                    // Burn
-                    let params = deserialize_params(params);
-                    let res = token_actor.burn(params).unwrap();
-                    let cid = token_actor.util.flush().unwrap();
-                    sdk::sself::set_root(&cid).unwrap();
-                    return_ipld(&res).unwrap()
-                }
-                0xd7d4deed => {
-                    // TransferFrom
-                    let params = deserialize_params(params);
-                    let res = token_actor.transfer_from(params).unwrap();
-                    return_ipld(&res).unwrap()
-                }
+                // 0xfaa45236 => {
+                //     // Allowance
+                //     let params = deserialize_params(params);
+                //     let res = token_actor.allowance(params).unwrap();
+                //     return_ipld(&res).unwrap()
+                // }
+                //0x69ecb918 => {
+                //    // IncreaseAllowance
+                //    let params = deserialize_params(params);
+                //    let res = token_actor.increase_allowance(params).unwrap();
+                //    let cid = token_actor.util.flush().unwrap();
+                //    sdk::sself::set_root(&cid).unwrap();
+                //    return_ipld(&res).unwrap()
+                //}
+                //0x5b286f21 => {
+                //    // DecreaseAllowance
+                //    let params = deserialize_params(params);
+                //    let res = token_actor.decrease_allowance(params).unwrap();
+                //    let cid = token_actor.util.flush().unwrap();
+                //    sdk::sself::set_root(&cid).unwrap();
+                //    return_ipld(&res).unwrap()
+                //}
+                //0xa4d840b1 => {
+                //    // RevokeAllowance
+                //    let params = deserialize_params(params);
+                //    token_actor.revoke_allowance(params).unwrap();
+                //    let cid = token_actor.util.flush().unwrap();
+                //    sdk::sself::set_root(&cid).unwrap();
+                //    NO_DATA_BLOCK_ID
+                //}
+                //0x5584159a => {
+                //    // Burn
+                //    let params = deserialize_params(params);
+                //    let res = token_actor.burn(params).unwrap();
+                //    let cid = token_actor.util.flush().unwrap();
+                //    sdk::sself::set_root(&cid).unwrap();
+                //    return_ipld(&res).unwrap()
+                //}
+                //0xd7d4deed => {
+                //    // TransferFrom
+                //    let params = deserialize_params(params);
+                //    let res = token_actor.transfer_from(params).unwrap();
+                //    return_ipld(&res).unwrap()
+                //}
                 0x04cbf732 => {
-                    // Transfer
+                    // FRC46-Transfer
                     let params = deserialize_params(params);
                     let res = token_actor.transfer(params).unwrap();
                     return_ipld(&res).unwrap()
+                }
+                0xa9059cbb => {
+                    // ERC20-Transfer
+                    let params = sdk::message::params_raw(params).unwrap().unwrap();
+                    let tokens = ethabi::decode(
+                        &[ParamType::Address, ParamType::Uint(256)],
+                        params.data.as_slice(),
+                    )
+                    .unwrap();
+                    if let [ETHToken::Address(addr), ETHToken::Uint(amount)] = tokens[..] {
+                        let to = h160_to_address(addr);
+                        let amount = u256_to_token_amount(amount);
+                        let _ = token_actor
+                            .transfer(TransferParams {
+                                to,
+                                amount,
+                                operator_data: Default::default(),
+                            })
+                            .unwrap();
+                        let bytes = ethabi::encode(&[ETHToken::Bool(true)]);
+                        sdk::ipld::put_block(DAG_CBOR, bytes.as_slice()).unwrap()
+                    } else {
+                        sdk::vm::abort(ExitCode::USR_ILLEGAL_ARGUMENT.value(), None);
+                    }
                 }
 
                 // Custom actor interface, these are author-defined methods that extend beyond the
@@ -324,4 +367,25 @@ fn constructor() -> u32 {
     let cid = token.flush().unwrap();
     sdk::sself::set_root(&cid).unwrap();
     NO_DATA_BLOCK_ID
+}
+
+fn h160_to_address(addr: H160) -> Address {
+    let id = addr.to_low_u64_be();
+    Address::new_id(id)
+}
+
+fn address_to_h160(addr: Address) -> H160 {
+    H160::from_low_u64_be(addr.id().unwrap())
+}
+
+fn token_amount_to_u256(amount: TokenAmount) -> U256 {
+    let (_, amount) = amount.atto().to_bytes_be();
+    U256::from_big_endian(amount.as_slice())
+}
+
+fn u256_to_token_amount(amount: U256) -> TokenAmount {
+    let mut big_endian = [0u8; 32];
+    amount.to_big_endian(&mut big_endian);
+    let amount = BigInt::from_bytes_be(Sign::Plus, &big_endian);
+    TokenAmount::from_atto(amount)
 }

@@ -29,3 +29,5 @@ basic_transfer_actor = { path = "actors/basic_transfer_actor" }
 frc46_test_actor = { path = "actors/frc46_test_actor" }
 frcxx_test_actor = { path = "actors/frcxx_test_actor" }
 frc46_factory_token = { path = "../../frc46_factory_token" }
+
+ethers = { version = "1.0.0"}
